@@ -22,9 +22,10 @@ func (p poi) String() string {
 
 type Template struct {
 	Tokens
-	Breaks []int
-	Matches [10]int
-	IdleAge int
+	Breaks []int    // cuts to be made in the tokens to make parts of the template
+	Gaps []int      // average number of tokens used in the gaps made by the cuts
+	Matches [10]int // match count categorized by the number of misses
+	Gen int
 }
 
 func (t Template) Size() int {
@@ -40,26 +41,29 @@ func (t Template) NearMissMatches() (int) {
 }
 
 func (t Template) String() string {
-	out := ""
+	if len(t.Gaps) == 0 {
+		return ""
+	}
+	out := fmt.Sprintf("{{%d}} ", t.Gaps[0])
 	idx := 0
-	for _, b := range t.Breaks {
-		out += strings.Join(t.Tokens[idx:b], " ") + " {{_}} "
+	for i, b := range t.Breaks {
+		out += strings.Join(t.Tokens[idx:b], " ") + fmt.Sprintf(" {{%d}} ", t.Gaps[i+1])
 		idx=b
 	}
-	out = out[:len(out)-len(" {{_}} ")]
+	out = out[:len(out)-1]
 	return fmt.Sprintf("[%s | 0:%d 1:%d 2:%d]", out, t.Matches[0], t.Matches[1], t.Matches[2])
 }
 
 // return true only if exact match is found
-func (t Template) Match(input string) (misses int, matches int, templatePois []poi) {
+func (t Template) Match(Y []string) (misses int, matches int, templatePois []poi) {
+	log.Debugf("current template: %s", t)
 	// empty template matches with nothing
 	if (len(t.Tokens) == 0) {
 		return
 	}
 
-	var X, Y []string
+	var X []string
 	X = t.Tokens
-	Y = strings.Split(input, " ")
 	matrix, pois := matchMatrix(X, Y)
 	templatePois = extractTemplate(pois);
 
@@ -67,12 +71,31 @@ func (t Template) Match(input string) (misses int, matches int, templatePois []p
 	// log.Debugf(printDetails(matrix, pois, templatePois))
 
 	misses = t.MissesTemplate(templatePois)
+
+
+	// adapt the gaps if misses are zero
+	gapsAcc := 0
+	if misses == 0 {
+		lastY := 0
+		for i, poi := range templatePois {
+			t.Gaps[i] = ((poi.y - poi.v - lastY) * t.Matches[0] + t.Gaps[i])/(t.Matches[0] + 1)
+			gapsAcc += t.Gaps[i]
+			lastY = poi.y
+		}
+		t.Gaps[len(templatePois)] = ((len(Y) - templatePois[len(templatePois) - 1].y) * t.Matches[0] + t.Gaps[len(templatePois)])/(t.Matches[0] + 1)
+		gapsAcc += t.Gaps[len(templatePois)]
+	}
+
 	if misses > 9 {
 		misses = 9
 	}
 	t.Matches[misses] += 1
-	// log.Debugf("misses: %d", misses)
-	matches = (t.MatchesTemplate(templatePois) * 100) / len(Y)
+	log.Debugf("misses: %d", misses)
+	matches = ((t.MatchesTemplate(templatePois) + gapsAcc) * 100) / len(Y)
+	if matches > 100 {
+		matches = 100/matches
+	}
+
 	// log.Debugf("matches: %d", matches)
 
 	// make the decision
@@ -95,23 +118,24 @@ func (t Template) MissesTemplate(pois []poi) (misses int) {
 	// find the xs, where you expect them to be in the pois
 	// each deviation adds 1 towards the misses count
 	misses += len(pois) - t.Size()
+	if misses < 0 {
+		misses *= -1
+	}
 
-	// expected x positions of pois
 	xpos := 0
 	for _, poi := range pois {
 		xpos += poi.v
 	}
 	xpos -= len(t.Tokens)
+	// scale
+	xpos /= misses + 1
 
-	if (xpos > 0) {
+	if xpos > 0 {
 		misses += xpos
 	} else {
 		misses -= xpos
 	}
 
-	if misses < 0 {
-		misses *= -1
-	}
 
 	return
 }
@@ -126,17 +150,27 @@ func (t Template) MatchesTemplate(pois []poi) (matches int) {
 }
 
 // pass the pointer so that the write happens on the original
-func (t *Template) ImproveTemplate(pois []poi) {
+func (t *Template) ImproveTemplate(pois []poi, inputLength int) {
+	if len(pois) == 0 {
+		log.Warnf("empty pois, cannot improve template")
+		return
+	}
 	var tokens Tokens
 	var breaks []int
+	var gaps []int
 	acc := 0
-	for _, poi := range pois {
+	lastY := 0
+	for i, poi := range pois {
 		tokens = append(tokens, t.Tokens[poi.x-poi.v:poi.x]...)
 		breaks = append(breaks, acc+poi.v)
+		gaps = append(gaps, pois[i].y - pois[i].v - lastY)
 		acc += poi.v
+		lastY = poi.y
 	}
+	gaps = append(gaps, inputLength - pois[len(pois) - 1].y)
 	t.Tokens = tokens
 	t.Breaks = breaks
+	t.Gaps = gaps
 	return
 }
 
@@ -152,6 +186,9 @@ func extractTemplate(pois []poi) []poi {
 	best := pois[0]
 	var leftPois, rightPois []poi
 	for _, p := range pois {
+		if p.v < 2 {
+			continue
+		}
 		if p.x <= (best.x - best.v) && p.y <= (best.y - best.v) {
 			leftPois = append(leftPois, p)
 		} else if p.x > best.x && p.y > best.y {

@@ -2,3 +2,5 @@ github.com/kataras/golog v0.1.5 h1:WbXu2rUc3yX/QB2mcNP5AjR64UlaaxkYrGMkO58T4Js=
 github.com/kataras/golog v0.1.5/go.mod h1:jOSQ+C5fUqsNSwurB/oAHq1IFSb0KI3l6GMa7xB6dZA=
 github.com/kataras/pio v0.0.10 h1:b0qtPUqOpM2O+bqa5wr2O6dN4cQNwSmFd6HQqgVae0g=
 github.com/kataras/pio v0.0.10/go.mod h1:gS3ui9xSD+lAUpbYnjOGiQyY7sUMJO+EHpiRzhtZ5no=
+github.com/krig/go-sox v0.0.0-20180617124112-7d2f8ae31981 h1:ir4NRMjkkSP63kAOiFDTQN3dcs0o6c0f1cfpe9V8JT0=
+github.com/krig/go-sox v0.0.0-20180617124112-7d2f8ae31981/go.mod h1:0uPmTzngejep+JBRxvlmijKKMexuskpMCzWFp+oFzc4=
