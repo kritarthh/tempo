@@ -14,7 +14,7 @@ func GetLogger(id string, callerSkip int) *golog.Logger {
         prefix := golog.GetTextForLevel(l.Level, true)
         _, fn, line, _ := runtime.Caller(callerSkip)
         message := fmt.Sprintf("%s %s %s:%d %s: %s",
-            prefix, id, fn[strings.LastIndex(fn, "/")+1:], line, l.Time.UTC(), l.Message)
+            l.Time.UTC(), id, fn[strings.LastIndex(fn, "/")+1:], line, prefix, l.Message)
 
         if l.NewLine {
             message += "\n"

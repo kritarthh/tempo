@@ -4,6 +4,11 @@ import (
 	"fmt"
 	"strings"
 	"sort"
+	"encoding/json"
+	"net/http"
+	"io"
+	"os"
+	"crypto/md5"
 )
 
 type Tokens []string
@@ -22,10 +27,21 @@ func (p poi) String() string {
 
 type Template struct {
 	Tokens
+	Chars int // number of characters in Tokens
+	LostCumulative int // this is a cumulative field which can only increase with template modification
+	// lost + chars must remain constant for a template
 	Breaks []int    // cuts to be made in the tokens to make parts of the template
-	Gaps []int      // average number of tokens used in the gaps made by the cuts
+	Gaps []int      // average number of tokens used in the gaps made by breaks
 	Matches [10]int // match count categorized by the number of misses
 	Gen int
+}
+
+func (t Template) Cardinality() int {
+	gapsAcc := 0
+	for _, gap := range t.Gaps {
+		gapsAcc += gap
+	}
+	return len(t.Tokens) + gapsAcc
 }
 
 func (t Template) Size() int {
@@ -41,22 +57,123 @@ func (t Template) NearMissMatches() (int) {
 }
 
 func (t Template) String() string {
-	if len(t.Gaps) == 0 {
-		return ""
+	return fmt.Sprintf("%#v", t)
+}
+
+func (t Template) ToJson() string {
+	b, err := json.Marshal(t)
+    if err != nil {
+        log.Errorf("%s", err)
+        return "{}"
+    }
+    return string(b)
+}
+
+func (t Template) ToTTS(input []string, pois []poi) (parts []string) {
+	dynamic := 0
+	static := 0
+	lastY := 0
+	for _, poi := range pois {
+		if poi.y-poi.v-lastY < 0 {continue}
+		// log.Warnf("%#v - %#v - %d", input, pois, i)
+		// dynamic part
+		parts = append(parts, strings.Join(input[lastY:poi.y-poi.v], ""))
+		dynamic += len(parts[len(parts)-1])
+		// static template part
+		parts = append(parts, strings.Join(input[poi.y-poi.v:poi.y], ""))
+		static += len(parts[len(parts)-1])
+		lastY = poi.y
 	}
-	out := fmt.Sprintf("{{%d}} ", t.Gaps[0])
-	idx := 0
-	for i, b := range t.Breaks {
-		out += strings.Join(t.Tokens[idx:b], " ") + fmt.Sprintf(" {{%d}} ", t.Gaps[i+1])
-		idx=b
+	if lastY < len(input) {
+		// dynamic
+		parts = append(parts, strings.Join(input[lastY:], ""))
+		dynamic += len(parts[len(parts)-1])
 	}
-	out = out[:len(out)-1]
-	return fmt.Sprintf("[%s | 0:%d 1:%d 2:%d]", out, t.Matches[0], t.Matches[1], t.Matches[2])
+	if strings.Join(parts, "") != strings.Join(input, "") {
+		log.Fatalf("%#v != %#v", strings.Join(parts, ""), strings.Join(input, ""))
+	}
+	// investigate performance of joins
+	// perform tts only when significant number of joins are present
+	if (dynamic * 100) / static > 25 || static < 100 {
+		return
+	}
+	return
+
+	// get audio from polly usiing both modified and unmodified XML
+	// compare the quality
+
+	var pcmParts []byte
+	req, _ := http.NewRequest("GET", "https://pollyurl", nil)
+
+	q := req.URL.Query()
+	q.Add("audioformat", "pcm")
+	q.Add("samplerate", "8000")
+	q.Add("voice", "Salli")
+	for i, p := range parts {
+		log.Debugf("fetching from tts - %s", p)
+		if p == "" {continue}
+		q.Del("ssml")
+		// pause := "strong"
+		// q.Add("ssml", fmt.Sprintf("<speak><break strength=\"%s\"/>%s</speak>", pause, p))
+		q.Add("ssml", fmt.Sprintf("<speak>%s</speak>", p))
+		req.URL.RawQuery = q.Encode()
+		resp, err := http.Get(req.URL.String())
+		if err != nil {
+			log.Errorf("error tts request - %#v", err)
+			break
+		}
+		defer resp.Body.Close()
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Error(err)
+			break
+		}
+		if i != 0 {
+			// add silence at the begining
+			silence := make([]byte,int(8000*0.75))
+			pcmParts = append(pcmParts, silence...)
+		}
+		pcmParts = append(pcmParts, bodyBytes...)
+	}
+	pcmfile := fmt.Sprintf("pcm/%x.pcm", md5.Sum([]byte(strings.Join(parts, ""))))
+	os.Remove(pcmfile)
+	out, err := os.Create(pcmfile)
+	if err != nil {
+		log.Error(err)
+		return
+	}
+	defer out.Close()
+	if _, err := out.Write(pcmParts); err != nil {
+		log.Errorf("%#v", err)
+	}
+	// save the original speech now for comparision
+	q.Del("ssml")
+	q.Add("ssml", fmt.Sprintf("<speak>%s</speak>", strings.Join(parts, "")))
+	req.URL.RawQuery = q.Encode()
+	resp, err := http.Get(req.URL.String())
+	if err != nil {
+		log.Errorf("error tts request - %#v", err)
+	}
+	defer resp.Body.Close()
+	pcmfile = fmt.Sprintf("pcm/%x-orig.pcm", md5.Sum([]byte(strings.Join(input, ""))))
+	os.Remove(pcmfile)
+	out, err = os.Create(pcmfile)
+	if err != nil {
+		log.Error(err)
+		return
+	}
+	defer out.Close()
+	io.Copy(out, resp.Body)
+	return
+}
+
+func (t *Template) FromString(tmpl string) {
+	return
 }
 
 // return true only if exact match is found
-func (t Template) Match(Y []string) (misses int, matches int, templatePois []poi) {
-	log.Debugf("current template: %s", t)
+func (t *Template) Match(Y []string) (misses int, matches int, templatePois []poi) {
+	// log.Debugf("match string: %s against template: %#v", Y, t)
 	// empty template matches with nothing
 	if (len(t.Tokens) == 0) {
 		return
@@ -67,11 +184,10 @@ func (t Template) Match(Y []string) (misses int, matches int, templatePois []poi
 	matrix, pois := matchMatrix(X, Y)
 	templatePois = extractTemplate(pois);
 
-	_ = matrix
 	// log.Debugf(printDetails(matrix, pois, templatePois))
+	_ = matrix
 
 	misses = t.MissesTemplate(templatePois)
-
 
 	// adapt the gaps if misses are zero
 	gapsAcc := 0
@@ -82,21 +198,19 @@ func (t Template) Match(Y []string) (misses int, matches int, templatePois []poi
 			gapsAcc += t.Gaps[i]
 			lastY = poi.y
 		}
-		t.Gaps[len(templatePois)] = ((len(Y) - templatePois[len(templatePois) - 1].y) * t.Matches[0] + t.Gaps[len(templatePois)])/(t.Matches[0] + 1)
-		gapsAcc += t.Gaps[len(templatePois)]
+		// TODO: FIX ME
+		// t.Gaps[len(templatePois)] = ((len(Y) - templatePois[len(templatePois) - 1].y) * t.Matches[0] + t.Gaps[len(templatePois)])/(t.Matches[0] + 1)
+		// gapsAcc += t.Gaps[len(templatePois)]
 	}
 
 	if misses > 9 {
 		misses = 9
 	}
 	t.Matches[misses] += 1
-	log.Debugf("misses: %d", misses)
 	matches = ((t.MatchesTemplate(templatePois) + gapsAcc) * 100) / len(Y)
-	if matches > 100 {
-		matches = 100/matches
+	if len(Y) < t.Cardinality() {
+		matches = ((t.MatchesTemplate(templatePois) + gapsAcc) * 100) / t.Cardinality()
 	}
-
-	// log.Debugf("matches: %d", matches)
 
 	// make the decision
 	// b = true
@@ -117,32 +231,28 @@ func (t Template) MissesTemplate(pois []poi) (misses int) {
 	// count the numbers of pois that you expect
 	// find the xs, where you expect them to be in the pois
 	// each deviation adds 1 towards the misses count
-	misses += len(pois) - t.Size()
+
+	// t.size is based on breaks which is always 1 more than number of pois
+	misses += len(pois) - (t.Size() - 1)
 	if misses < 0 {
-		misses *= -1
+		misses = -misses
 	}
 
-	xpos := 0
-	for _, poi := range pois {
-		xpos += poi.v
-	}
-	xpos -= len(t.Tokens)
-	// scale
-	xpos /= misses + 1
-
+	xpos := t.MatchesTemplate(pois) - len(t.Tokens)
+	// // scale
+	// xpos /= misses + 1
 	if xpos > 0 {
 		misses += xpos
 	} else {
 		misses -= xpos
 	}
 
-
+	// log.Debugf("misses: %d", misses)
 	return
 }
 
 func (t Template) MatchesTemplate(pois []poi) (matches int) {
 	// count the number of matching tokens
-
 	for _, poi := range pois {
 		matches += poi.v
 	}
@@ -155,24 +265,39 @@ func (t *Template) ImproveTemplate(pois []poi, inputLength int) {
 		log.Warnf("empty pois, cannot improve template")
 		return
 	}
+	// log.Debugf("improve template with %#v", pois)
 	var tokens Tokens
 	var breaks []int
 	var gaps []int
 	acc := 0
+	lost := 0
 	lastY := 0
+	lastX := 0
+	// always add a break in the beginning
+	breaks = append(breaks, 0)
 	for i, poi := range pois {
-		tokens = append(tokens, t.Tokens[poi.x-poi.v:poi.x]...)
-		breaks = append(breaks, acc+poi.v)
-		gaps = append(gaps, pois[i].y - pois[i].v - lastY)
 		acc += poi.v
+		for j := lastX ; j < poi.x - poi.v ; j++ {
+			lost += len(t.Tokens[j])
+		}
+		tokens = append(tokens, t.Tokens[poi.x-poi.v:poi.x]...)
+		breaks = append(breaks, acc)
+		gaps = append(gaps, pois[i].y - pois[i].v - lastY)
 		lastY = poi.y
+		lastX = poi.x
 	}
 	gaps = append(gaps, inputLength - pois[len(pois) - 1].y)
+	for j := lastX ; j < len(t.Tokens) ; j++ {
+		lost += len(t.Tokens[j])
+	}
 	t.Tokens = tokens
 	t.Breaks = breaks
 	t.Gaps = gaps
+	t.Chars = (t.Chars + t.LostCumulative) - lost // total - lost
+	t.LostCumulative += lost
 	return
 }
+
 
 func extractTemplate(pois []poi) []poi {
 	// start from the longest substring and build the template from there
