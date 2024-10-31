@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	// "regexp"
 	// "net/url"
+	"encoding/csv"
 )
 
 type Cache struct {
@@ -36,7 +37,7 @@ func SplitAfterAny(s string, seps string) []string {
 				withoutSpace := strings.TrimSpace(s[last:i+1])
 				if len(fields) > 0 &&
 					((len(withoutSpace) == 1 && strings.Contains(seps, withoutSpace)) ||
-						len(withoutSpace) < 5) {
+						len(withoutSpace) < 1) {
 					// possibly just a space with separator
 					fields[len(fields) - 1] += s[last:i+1]
 				} else {
@@ -53,6 +54,7 @@ func SplitAfterAny(s string, seps string) []string {
 }
 
 func (c *Cache) Process(inputString string, currentGen int) {
+	log.Debugf("Processing input: %#v", inputString)
 	// look for a match in templates
 	var found Template
 	var input = SplitAfterAny(inputString, SEPARATOR)
@@ -62,13 +64,16 @@ func (c *Cache) Process(inputString string, currentGen int) {
 		// go through each version one by one and then sort them at the end
 		// if an exact match is found, delete all other versions
 
-		for i := 0; i < len(*t); i++ {
-			// if currentGen - (*t)[i].Gen > 100 && (*t)[i].Matches[9] > 10 {
-			if (*t)[i].Matches[0] < 5 && (currentGen - (*t)[i].Gen > 500) {
-				*t = append((*t)[:i], (*t)[i+1:]...)
-				i--
-			}
-		}
+		// // remove too infrequent templates
+		// // do NOT remove unmatched templates
+		// for i := 0; i < len(*t); i++ {
+		// 	// if currentGen - (*t)[i].Gen > 100 && (*t)[i].Matches[9] > 10 {
+		// 	if (*t)[i].Matches[0] < 3 && (currentGen - (*t)[i].Gen > 1000) {
+		// 		*t = append((*t)[:i], (*t)[i+1:]...)
+		// 		i--
+		// 	}
+		// }
+
 		if len(*t) == 0 {
 			delete(c.Templates, t)
 			continue
@@ -82,16 +87,17 @@ func (c *Cache) Process(inputString string, currentGen int) {
 			if cardinalityP < 0 {
 				cardinalityP = -cardinalityP
 			}
-			if cardinalityP > 33 {
+			if cardinalityP > 50 {
 				// log.Warnf("Cardinality mismatch: %d%%, must be less than 25%%", cardinalityP)
 				continue
 			}
 			gen += template.Gen
 			misses, matchp, pois := template.Match(input)
 			// log.Debugf("match percentage %d%%", matchp)
-			if misses == 0 && matchp > 75 {
+			if misses == 0 && matchp > 50 {
 				found = template
 				found.Gen = currentGen
+				found.Sample = inputString
 				log.Debugf("Found template: %#v", found)
 				break
 			} else {
@@ -132,6 +138,7 @@ func (c *Cache) Process(inputString string, currentGen int) {
 
 	}
 	if found.Size() == 0 {
+		log.Infof("Adding raw template")
 		// create a new template
 		var t = Template{
 			Tokens: input,
@@ -140,6 +147,7 @@ func (c *Cache) Process(inputString string, currentGen int) {
 			Gaps: []int{0, 0},
 			LostCumulative: 0,
 			Matches: [10]int{0},
+			Sample: inputString,
 			Gen: currentGen,
 		}
 		c.Templates[&[]Template{t}] = struct{}{}
@@ -193,8 +201,8 @@ func (c *Cache) CalculateSavings(inputString string) {
 func (c *Cache) StreamSavings() {
 
 	// file, err := os.Open("data/tts.log")
-	// file, err := os.Open("data/use1.txt.10K")
-	file, err := os.Open("data/use1.txt")
+	file, err := os.Open("data/use1.txt.10K")
+	// file, err := os.Open("data/use1.txt")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -230,11 +238,10 @@ func (c *Cache) StreamSavings() {
 	}
 }
 
-func (c Cache) Stream() {
 
-	// file, err := os.Open("data/tts.log")
-	// file, err := os.Open("data/use1.txt.10K")
-	file, err := os.Open("data/use1.txt")
+
+func (c Cache) Stream() {
+	file, err := os.Open(CSV_PATH)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -244,15 +251,31 @@ func (c Cache) Stream() {
 		}
 	}()
 
-	scanner := bufio.NewScanner(file)
-	// re := regexp.MustCompile("GET - /ssml\\?ssml=%3Cspeak%3E[^&]*%3C/speak%3E")
+	csvReader := csv.NewReader(file)
+    records, err := csvReader.ReadAll()
+    if err != nil {
+        log.Fatal("Unable to parse file as CSV", err)
+    }
+
+	for _, row := range records {
+		fmt.Printf("%s", row[0])
+		// for _, col := range row {
+		// 	fmt.Printf("%s,", col)
+		// }
+		fmt.Println()
+	}
+
+	// scanner := bufio.NewScanner(file)
+
 
 	totalCount := 0
 	count := 0
-	for scanner.Scan() {
+	// for scanner.Scan() {
+	for _, row := range records {
 		totalCount += 1
 		// match := re.FindStringSubmatch(scanner.Text())
-		text := scanner.Text()
+		// text := scanner.Text()
+		text := strings.Join(strings.Fields(strings.TrimSpace(strings.ReplaceAll(row[0], "\n", " "))), " ")
 		// if len(match) > 0 {
 		if len(text) > 0 {
 			// log.Debugf("Templates cache size is %d", len(c.Templates))
@@ -284,7 +307,11 @@ func (c Cache) Dump(suffix string) {
 		sort.Slice((*t), func(i, j int) bool {
 			return (*t)[i].Matches[0] > (*t)[j].Matches[0]
 		})
-		tmpls = append(tmpls, (*t)[0])
+		for i, template := range *t {
+			if i > 0 {break}
+			tmpls = append(tmpls, template)
+		}
+		delete(c.Templates, t)
 	}
 	sort.Slice(tmpls, func(i, j int) bool {
 		return tmpls[i].Matches[0] * tmpls[i].Chars < tmpls[j].Matches[0] * tmpls[i].Chars
@@ -294,9 +321,41 @@ func (c Cache) Dump(suffix string) {
     defer f.Close()
     w := bufio.NewWriter(f)
 	for _, t := range tmpls {
-		if t.Matches[0] > 5 {
+		if t.Matches[0] >= 0 {
+			if !c.IsDuplicate(t) {
+				log.Debugf("matches:%d - %#v - %s", t.Matches[0], t, t.ToJson())
+				_, _ = w.WriteString(t.ToJson())
+				_, _ = w.WriteString("\n")
+				c.Templates[&[]Template{t}] = struct{}{}
+			}
+		}
+	}
+    w.Flush()
+}
+
+func (c Cache) Pretty(suffix string) {
+	log.Debugf("Pretty printing templates %d", len(c.Templates))
+	var tmpls []Template
+	for t := range c.Templates {
+		sort.Slice((*t), func(i, j int) bool {
+			return (*t)[i].Matches[0] > (*t)[j].Matches[0]
+		})
+		for i, template := range *t {
+			if i > 0 {break}
+			tmpls = append(tmpls, template)
+		}
+	}
+	sort.Slice(tmpls, func(i, j int) bool {
+		return tmpls[i].Matches[0] * tmpls[i].Chars > tmpls[j].Matches[0] * tmpls[i].Chars
+	})
+
+    f, _ := os.Create(fmt.Sprintf("pretty-templates-%s.txt", suffix))
+    defer f.Close()
+    w := bufio.NewWriter(f)
+	for _, t := range tmpls {
+		if t.Matches[0] >= 1 {
 			log.Debugf("matches:%d - %#v - %s", t.Matches[0], t, t.ToJson())
-			_, _ = w.WriteString(t.ToJson())
+			_, _ = w.WriteString(t.String())
 			_, _ = w.WriteString("\n")
 		}
 	}
@@ -326,9 +385,38 @@ func (c Cache) Load(suffix string) {
 			if err != nil {
 				panic(err)
 			}
-			c.Templates[&[]Template{t}] = struct{}{}
+			// dont add if duplicate
+			if !c.IsDuplicate(t) {
+				c.Templates[&[]Template{t}] = struct{}{}
+			}
 		}
 	}
+}
+
+func (c Cache) IsDuplicate(t Template) (found bool) {
+	for tmpls := range c.Templates {
+		if found {
+			// duplicate found, do not add
+			break
+		}
+		for _, tmpl := range *tmpls {
+			if len(tmpl.Tokens) != len(t.Tokens) {
+				continue
+			}
+			found = true
+			for i, token := range tmpl.Tokens {
+				if t.Tokens[i] != token {
+					found = false
+					break
+				}
+			}
+			if found && len(tmpl.Tokens) == len(t.Tokens) {
+				// duplicate found, do not add
+				break
+			}
+		}
+	}
+	return found
 }
 
 func continue_on_key() {

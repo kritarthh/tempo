@@ -6,6 +6,7 @@ import (
 )
 
 var SEPARATOR = os.Args[1]
+var CSV_PATH = "data/_ALL.csv"
 
 var log = GetLogger("tempo", 5)
 
@@ -32,8 +33,11 @@ func main() {
 	if os.Args[2] == "process" {
 		cache.Stream()
 		cache.Dump(os.Args[1])
+		cache.Pretty(os.Args[1])
 	} else {
 		cache.Load(os.Args[1])
+		cache.Pretty(os.Args[1])
+		// return
 		cache.PrintTemplates()
 		cache.StreamSavings()
 		log.Infof("Savings - %#v", cache)

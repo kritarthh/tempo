@@ -33,6 +33,7 @@ type Template struct {
 	Breaks []int    // cuts to be made in the tokens to make parts of the template
 	Gaps []int      // average number of tokens used in the gaps made by breaks
 	Matches [10]int // match count categorized by the number of misses
+	Sample string
 	Gen int
 }
 
@@ -57,7 +58,35 @@ func (t Template) NearMissMatches() (int) {
 }
 
 func (t Template) String() string {
-	return fmt.Sprintf("%#v", t)
+	// out := ""
+	// lastB := 0
+	// for i, b := range t.Breaks {
+	// 	// if (i == 0 || i == len(t.Breaks) - 1) && t.Gaps[i] == 0 {
+	// 	// 	continue
+	// 	// }
+	// 	out = fmt.Sprintf("%s%s{{%d}}", out, strings.Join(t.Tokens[lastB:b], ""), t.Gaps[i])
+	// 	lastB = b
+	// }
+	// out = fmt.Sprintf("%s | Chars:%d | Lost:%d | Matches:%d | SavedChars:%d", out, t.Chars, t.LostCumulative, t.Matches[0], t.Matches[0]*t.Chars)
+	// return out
+	// // return fmt.Sprintf("%#v", t)
+    out := ""
+	if len(t.Gaps) > 0 && t.Gaps[0] > 0 {
+		out += fmt.Sprintf("{{ %d }} ", t.Gaps[0])
+	}
+	lastBreak := 0
+	for i, g := range t.Gaps {
+		if i > 0 {
+			lastBreak = t.Breaks[i-1]
+			out += fmt.Sprintf("%s", strings.Join(t.Tokens[lastBreak:t.Breaks[i]], ""))
+			if g > 0 {
+				out += fmt.Sprintf("{{ %d }} ", g)
+			}
+		}
+
+	}
+	out = fmt.Sprintf("%s | Chars:%d | Lost:%d | Matches:%d | SavedChars:%d |||||%s", out, t.Chars, t.LostCumulative, t.Matches[0], t.Matches[0]*t.Chars, t.Sample)
+	return out
 }
 
 func (t Template) ToJson() string {
@@ -265,7 +294,7 @@ func (t *Template) ImproveTemplate(pois []poi, inputLength int) {
 		log.Warnf("empty pois, cannot improve template")
 		return
 	}
-	// log.Debugf("improve template with %#v", pois)
+	log.Debugf("improve template %#v with %#v", t, pois)
 	var tokens Tokens
 	var breaks []int
 	var gaps []int
